@@ -1,345 +1,224 @@
-import { useState, useEffect } from "react";
-import { Toaster, toast } from "react-hot-toast";
-import Navbar from "./components/Navbar";
-import ContactTable from "./components/ContactTable";
-import ErrorContactTable from "./components/ErrorContactTable";
-import ContactForm from "./components/ContactForm";
-import LoadingSpinner from "./components/LoadingSpinner";
-import StatsCard from "./components/StatsCard";
-import SearchFilters from "./components/SearchFilters";
-import { API_URL } from "./config/api";
+import React, { useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { Toaster } from 'react-hot-toast';
+import toast from 'react-hot-toast';
 
-export default function App() {
-  const [loading, setLoading] = useState(true);
-  const [loadingAction, setLoadingAction] = useState(false);
-  const [contacts, setContacts] = useState([]);
-  const [filteredContacts, setFilteredContacts] = useState([]);
-  const [validationReport, setValidationReport] = useState(null);
-  const [invalidContacts, setInvalidContacts] = useState([]);
-  const [stats, setStats] = useState({
-    totalContactos: 0,
-    validContactos: 0,
-    errorContactos: 0,
-  });
-  const [isFormOpen, setIsFormOpen] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [currentContact, setCurrentContact] = useState(null);
-  const [activeFilters, setActiveFilters] = useState({});
+// Components
+import Layout from './components/Layout';
+import Dashboard from './pages/Dashboard';
+import ContactosListOptimized from './pages/ContactosListOptimized';
+import ContactoForm from './pages/ContactoForm';
+import ValidationReport from './pages/ValidationReport';
+import ErrorCorrection from './pages/ErrorCorrection';
+import DebugApiStatus from './components/DebugApiStatus';
 
+// Services
+import { subscribeToDataUpdates, getCacheStats } from './services/api';
+
+function App() {
+  // ✅ Configurar listeners globales para sincronización de datos
   useEffect(() => {
-    fetchContactsWithValidation();
+    console.log('🚀 Inicializando aplicación con sincronización de datos...');
+    
+    // Suscribirse a actualizaciones de datos
+    const unsubscribe = subscribeToDataUpdates((updateData) => {
+      console.log('📡 Actualización global recibida:', updateData);
+      
+      // Manejar diferentes tipos de actualizaciones a nivel global
+      switch (updateData.type) {
+        case 'contacto-created':
+          toast.success('✅ Contacto creado correctamente');
+          break;
+          
+        case 'contacto-updated':
+          toast.success('📝 Contacto actualizado correctamente');
+          // Emitir evento específico para componentes que lo necesiten
+          window.dispatchEvent(new CustomEvent('contacto-updated', {
+            detail: updateData
+          }));
+          break;
+          
+        case 'contacto-deleted':
+          toast.success('🗑️ Contacto eliminado correctamente');
+          break;
+          
+        case 'excel-reloaded':
+          toast.success('🔄 Datos recargados desde Excel');
+          // Forzar refresh de todos los componentes que muestren datos
+          window.dispatchEvent(new CustomEvent('data-reload-complete', {
+            detail: updateData
+          }));
+          break;
+          
+        default:
+          console.log('📊 Actualización de datos:', updateData.type);
+      }
+    });
+
+    // ✅ Listener para errores de conexión API
+    const handleApiError = (event) => {
+      console.error('🔌 Error de conexión API:', event.detail);
+      toast.error('Error de conexión con el servidor');
+    };
+
+    // ✅ Listener para estadísticas de rendimiento (solo en desarrollo)
+    const handlePerformanceCheck = () => {
+      if (process.env.NODE_ENV === 'development') {
+        const stats = getCacheStats();
+        console.log('📊 Estadísticas de cache:', stats);
+        
+        if (stats.cacheHitRate < 0.3) {
+          console.warn('⚠️ Baja tasa de aciertos de cache:', stats.cacheHitRate);
+        }
+      }
+    };
+
+    // ✅ Configurar listeners
+    window.addEventListener('api-error', handleApiError);
+    
+    // Check de rendimiento cada 5 minutos en desarrollo
+    let perfInterval;
+    if (process.env.NODE_ENV === 'development') {
+      perfInterval = setInterval(handlePerformanceCheck, 5 * 60 * 1000);
+      // Check inicial después de 30 segundos
+      setTimeout(handlePerformanceCheck, 30000);
+    }
+
+    // ✅ Configurar manejo de errores no capturados
+    const handleUnhandledError = (event) => {
+      console.error('❌ Error no manejado:', event.error);
+      
+      // Solo mostrar toast para errores relacionados con API
+      if (event.error?.message?.includes('API') || 
+          event.error?.message?.includes('fetch') ||
+          event.error?.message?.includes('axios')) {
+        toast.error('Error de comunicación con el servidor');
+      }
+    };
+
+    const handleUnhandledRejection = (event) => {
+      console.error('❌ Promesa rechazada no manejada:', event.reason);
+      
+      // Manejar errores específicos de API
+      if (event.reason?.response?.status === 500) {
+        toast.error('Error interno del servidor');
+      } else if (event.reason?.response?.status === 404) {
+        console.log('ℹ️ Recurso no encontrado (404) - manejado silenciosamente');
+      } else if (event.reason?.code === 'NETWORK_ERROR') {
+        toast.error('Error de red - verifica tu conexión');
+      }
+    };
+
+    window.addEventListener('error', handleUnhandledError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    // ✅ Log de inicialización exitosa
+    console.log('✅ App inicializada correctamente con:', {
+      dataSync: 'Activo',
+      errorHandling: 'Configurado',
+      cacheSystem: 'Operativo',
+      environment: process.env.NODE_ENV
+    });
+
+    // Cleanup
+    return () => {
+      unsubscribe();
+      window.removeEventListener('api-error', handleApiError);
+      window.removeEventListener('error', handleUnhandledError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      
+      if (perfInterval) {
+        clearInterval(perfInterval);
+      }
+      
+      console.log('🧹 App cleanup completado');
+    };
   }, []);
 
-  useEffect(() => {
-    // Cuando se cargan los contactos, inicializar los filtrados
-    setFilteredContacts(contacts);
-  }, [contacts]);
-
-  const fetchContactsWithValidation = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(`${API_URL}/contactos/con-validacion`);
-      const result = await response.json();
-      
-      if (result.success) {
-        setContacts(result.data.contactos || []);
-        setFilteredContacts(result.data.contactos || []);
-        setValidationReport(result.data.validationReport);
-        setInvalidContacts(result.data.invalidRowsData || []);
-        setStats({
-          totalContactos: result.data.totalContactos || 0,
-          validContactos: result.data.validContactos || 0,
-          errorContactos: result.data.errorContactos || 0,
-        });
-      } else {
-        toast.error("Error al cargar los contactos");
-      }
-    } catch (error) {
-      console.error("Error:", error);
-      toast.error("Error de conexión al servidor");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleReloadExcel = async () => {
-    try {
-      setLoadingAction(true);
-      const response = await fetch(`${API_URL}/contactos/reload`, {
-        method: "POST",
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        toast.success("Archivo Excel recargado exitosamente");
-        fetchContactsWithValidation();
-      } else {
-        toast.error(result.error || "Error al recargar el archivo Excel");
-      }
-    } catch (error) {
-      console.error("Error:", error);
-      toast.error("Error de conexión al servidor");
-    } finally {
-      setLoadingAction(false);
-    }
-  };
-
-  const handleCreateContact = async (contactData) => {
-    try {
-      setLoadingAction(true);
-      const response = await fetch(`${API_URL}/contactos`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+  // ✅ Configuración mejorada de toast
+  const toastConfig = {
+    duration: 4000,
+    style: {
+      background: '#363636',
+      color: '#fff',
+      borderRadius: '8px',
+      fontSize: '14px',
+      maxWidth: '500px',
+    },
+    success: {
+      duration: 3000,
+      iconTheme: {
+        primary: '#10B981',
+        secondary: '#fff',
+      },
+    },
+    error: {
+      duration: 6000,
+      iconTheme: {
+        primary: '#EF4444',
+        secondary: '#fff',
+      },
+    },
+    loading: {
+      duration: Infinity,
+    },
+    // ✅ Configuraciones específicas para corrección de errores
+    custom: {
+      correction: {
+        duration: 5000,
+        style: {
+          background: '#3B82F6',
+          color: '#fff',
         },
-        body: JSON.stringify(contactData),
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        toast.success("Contacto creado exitosamente");
-        setIsFormOpen(false);
-        fetchContactsWithValidation();
-      } else {
-        if (result.errors && result.errors.length > 0) {
-          result.errors.forEach(err => toast.error(`${err.campo}: ${err.mensaje}`));
-        } else {
-          toast.error(result.error || "Error al crear el contacto");
-        }
-      }
-    } catch (error) {
-      console.error("Error:", error);
-      toast.error("Error de conexión al servidor");
-    } finally {
-      setLoadingAction(false);
-    }
-  };
-
-  const handleUpdateContact = async (contactData) => {
-    try {
-      setLoadingAction(true);
-      const response = await fetch(`${API_URL}/contactos/${contactData.claveCliente}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(contactData),
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        toast.success("Contacto actualizado exitosamente");
-        setIsFormOpen(false);
-        setIsEditMode(false);
-        setCurrentContact(null);
-        fetchContactsWithValidation();
-      } else {
-        if (result.errors && result.errors.length > 0) {
-          result.errors.forEach(err => toast.error(`${err.campo}: ${err.mensaje}`));
-        } else {
-          toast.error(result.error || "Error al actualizar el contacto");
-        }
-      }
-    } catch (error) {
-      console.error("Error:", error);
-      toast.error("Error de conexión al servidor");
-    } finally {
-      setLoadingAction(false);
-    }
-  };
-
-  const handleDeleteContact = async (claveCliente) => {
-    if (!window.confirm("¿Estás seguro que deseas eliminar este contacto?")) return;
-    
-    try {
-      setLoadingAction(true);
-      const response = await fetch(`${API_URL}/contactos/${claveCliente}`, {
-        method: "DELETE",
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        toast.success("Contacto eliminado exitosamente");
-        fetchContactsWithValidation();
-      } else {
-        toast.error(result.error || "Error al eliminar el contacto");
-      }
-    } catch (error) {
-      console.error("Error:", error);
-      toast.error("Error de conexión al servidor");
-    } finally {
-      setLoadingAction(false);
-    }
-  };
-
-  const handleSearch = async (filters) => {
-    setLoadingAction(true);
-    setActiveFilters(filters);
-    
-    // Filtrar localmente si no hay muchos criterios
-    if (!filters || Object.values(filters).every(val => val === "")) {
-      setFilteredContacts(contacts);
-      setLoadingAction(false);
-      return;
-    }
-    
-    try {
-      // Construir parámetros de consulta
-      const params = new URLSearchParams();
-      if (filters.claveCliente) params.append("claveCliente", filters.claveCliente);
-      if (filters.nombre) params.append("nombre", filters.nombre);
-      if (filters.correo) params.append("correo", filters.correo);
-      if (filters.telefono) params.append("telefono", filters.telefono);
-      
-      // Hacer la búsqueda en la API
-      const response = await fetch(`${API_URL}/contactos/buscar?${params.toString()}`);
-      const result = await response.json();
-      
-      if (result.success) {
-        setFilteredContacts(result.data || []);
-        if ((result.data || []).length === 0) {
-          toast.info("No se encontraron contactos con los criterios especificados");
-        }
-      } else {
-        if (result.errors && result.errors.length > 0) {
-          result.errors.forEach(err => toast.error(`${err.campo}: ${err.mensaje}`));
-        } else {
-          toast.error(result.error || "Error al buscar contactos");
-        }
-        // Mantener la lista actual en caso de error
-        setFilteredContacts(contacts);
-      }
-    } catch (error) {
-      console.error("Error:", error);
-      toast.error("Error de conexión al servidor");
-      // Mantener la lista actual en caso de error
-      setFilteredContacts(contacts);
-    } finally {
-      setLoadingAction(false);
-    }
-  };
-
-  const openCreateForm = () => {
-    setCurrentContact(null);
-    setIsEditMode(false);
-    setIsFormOpen(true);
-  };
-
-  const openEditForm = (contact) => {
-    setCurrentContact(contact);
-    setIsEditMode(true);
-    setIsFormOpen(true);
-  };
-
-  const closeForm = () => {
-    setIsFormOpen(false);
-    setCurrentContact(null);
-    setIsEditMode(false);
-  };
-
-  const submitForm = (data) => {
-    if (isEditMode) {
-      handleUpdateContact(data);
-    } else {
-      handleCreateContact(data);
-    }
+      },
+    },
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Toaster position="top-right" />
-      <Navbar onReloadExcel={handleReloadExcel} loadingAction={loadingAction} />
-      
-      <main className="container mx-auto px-4 py-8">
-        {loading ? (
-          <div className="flex justify-center items-center h-64">
-            <LoadingSpinner />
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-              <StatsCard 
-                title="Total de Contactos" 
-                value={stats.totalContactos} 
-                icon="users" 
-                color="blue"
-              />
-              <StatsCard 
-                title="Contactos Válidos" 
-                value={stats.validContactos} 
-                icon="check-circle" 
-                color="green"
-              />
-              <StatsCard 
-                title="Contactos con Errores" 
-                value={stats.errorContactos} 
-                icon="alert-circle" 
-                color="red"
-              />
-            </div>
-
-            {/* Componente de búsqueda con filtros */}
-            <SearchFilters 
-              onSearch={handleSearch} 
-              loading={loadingAction} 
-            />
-
-            <div className="mb-8">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-gray-800">Contactos con Errores</h2>
-              </div>
-              {invalidContacts.length > 0 ? (
-                <ErrorContactTable 
-                  invalidContacts={invalidContacts} 
-                  validationReport={validationReport}
-                  onEditContact={openEditForm}
-                />
-              ) : (
-                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-                  <p className="text-green-700 font-medium">No hay contactos con errores. ¡Todo está correcto!</p>
-                </div>
-              )}
-            </div>
-
-            <div className="mb-8">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-gray-800">
-                  {Object.values(activeFilters).some(v => v !== "") 
-                    ? "Resultados de búsqueda" 
-                    : "Todos los Contactos"}
-                </h2>
-                <button
-                  onClick={openCreateForm}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg flex items-center"
-                  disabled={loadingAction}
-                >
-                  <span className="mr-2">Nuevo Contacto</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clipRule="evenodd" />
-                  </svg>
-                </button>
-              </div>
-              <ContactTable 
-                contacts={filteredContacts} 
-                onEditContact={openEditForm} 
-                onDeleteContact={handleDeleteContact}
-                loadingAction={loadingAction}
-              />
-            </div>
-          </>
-        )}
-      </main>
-
-      {isFormOpen && (
-        <ContactForm
-          isOpen={isFormOpen}
-          onClose={closeForm}
-          onSubmit={submitForm}
-          contact={currentContact}
-          isEditMode={isEditMode}
-          loading={loadingAction}
+    <Router>
+      <div className="min-h-screen bg-gray-50">
+        <Layout>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            
+            {/* 🚀 Lista optimizada para grandes datasets */}
+            <Route path="/contactos" element={<ContactosListOptimized />} />
+            
+            {/* 📝 Formularios con manejo mejorado de corrección */}
+            <Route path="/contactos/nuevo" element={<ContactoForm />} />
+            <Route path="/contactos/editar/:clave" element={<ContactoForm />} />
+            
+            {/* 📊 Validación y corrección */}
+            <Route path="/validacion" element={<ValidationReport />} />
+            <Route path="/correccion" element={<ErrorCorrection />} />
+            
+            {/* 🔧 Debug para verificar API Go */}
+            <Route path="/debug" element={<DebugApiStatus />} />
+          </Routes>
+        </Layout>
+        
+        {/* ✅ Toaster mejorado con configuración específica */}
+        <Toaster 
+          position="top-right"
+          toastOptions={toastConfig}
+          containerStyle={{
+            top: 20,
+            right: 20,
+          }}
+          gutter={8}
         />
-      )}
-    </div>
+        
+        {/* ✅ Indicador de desarrollo (solo en dev) */}
+        {process.env.NODE_ENV === 'development' && (
+          <div className="fixed bottom-4 left-4 z-50">
+            <div className="bg-blue-600 text-white px-3 py-1 rounded-full text-xs font-medium">
+              🔧 DEV MODE
+            </div>
+          </div>
+        )}
+      </div>
+    </Router>
   );
 }
+
+export default App;

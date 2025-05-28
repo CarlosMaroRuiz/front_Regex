@@ -2,15 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Definir colores primary personalizados si no están definidos */
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-primary-200: #bfdbfe;
+  --color-primary-300: #93c5fd;
+  --color-primary-400: #60a5fa;
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+  --color-primary-700: #1d4ed8;
+  --color-primary-800: #1e40af;
+  --color-primary-900: #1e3a8a;
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-  background-color: #f3f4f6;
+/* Clases personalizadas para primary si no están disponibles */
+.bg-primary-50 { background-color: var(--color-primary-50); }
+.bg-primary-100 { background-color: var(--color-primary-100); }
+.bg-primary-500 { background-color: var(--color-primary-500); }
+.bg-primary-600 { background-color: var(--color-primary-600); }
+.bg-primary-700 { background-color: var(--color-primary-700); }
+
+.text-primary-100 { color: var(--color-primary-100); }
+.text-primary-500 { color: var(--color-primary-500); }
+.text-primary-600 { color: var(--color-primary-600); }
+.text-primary-700 { color: var(--color-primary-700); }
+
+.border-primary-200 { border-color: var(--color-primary-200); }
+.border-primary-500 { border-color: var(--color-primary-500); }
+
+.ring-primary-500 { --tw-ring-color: var(--color-primary-500); }
+.focus\:ring-primary-500:focus { --tw-ring-color: var(--color-primary-500); }
+.focus\:border-primary-500:focus { border-color: var(--color-primary-500); }
+
+.hover\:bg-primary-50:hover { background-color: var(--color-primary-50); }
+.hover\:bg-primary-700:hover { background-color: var(--color-primary-700); }
+.hover\:text-primary-700:hover { color: var(--color-primary-700); }
+
+/* Estilos personalizados para mejor UX */
+.loading-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Mejorar los inputs del formulario */
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Transiciones suaves para botones */
+button {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Estilos para los toast notifications */
+.toast-success {
+  background-color: #10b981;
+}
+
+.toast-error {
+  background-color: #ef4444;
+}
+
+/* Responsive improvements */
+@media (max-width: 640px) {
+  .nav-mobile {
+    display: block;
+  }
+  
+  .nav-desktop {
+    display: none;
+  }
+}
+
+@media (min-width: 641px) {
+  .nav-mobile {
+    display: none;
+  }
+  
+  .nav-desktop {
+    display: flex;
+  }
 }
