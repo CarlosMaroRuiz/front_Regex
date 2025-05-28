@@ -202,19 +202,61 @@ const ContactoForm = () => {
     return claveStr;
   };
 
-  // Función para emitir evento de actualización de contacto
+  // ✅ FUNCIÓN MEJORADA: emitContactoUpdated con múltiples eventos
   const emitContactoUpdated = (contactoData) => {
-    const event = new CustomEvent('contacto-updated', {
+    console.log('📡 Emitiendo eventos de actualización para:', contactoData);
+    
+    // ✅ Evento específico contacto-updated (para compatibilidad)
+    const contactoUpdatedEvent = new CustomEvent('contacto-updated', {
       detail: {
         type: 'contacto-updated',
         contacto: contactoData,
         isFromCorrection: isFromCorrection,
-        originalErrorData: originalErrorData
+        originalErrorData: originalErrorData,
+        timestamp: Date.now()
       }
     });
     
-    window.dispatchEvent(event);
-    console.log('📡 Evento contacto-updated emitido:', contactoData);
+    // ✅ Evento genérico api-data-updated (el que usa el sistema de cache)
+    const apiDataUpdatedEvent = new CustomEvent('api-data-updated', {
+      detail: {
+        type: isEditing ? 'contacto-updated' : 'contacto-created',
+        data: contactoData,
+        isFromCorrection: isFromCorrection,
+        originalErrorData: originalErrorData,
+        timestamp: Date.now()
+      }
+    });
+    
+    // Emitir ambos eventos
+    window.dispatchEvent(contactoUpdatedEvent);
+    window.dispatchEvent(apiDataUpdatedEvent);
+    
+    console.log('📡 Eventos emitidos:', {
+      'contacto-updated': contactoData,
+      'api-data-updated': {
+        type: isEditing ? 'contacto-updated' : 'contacto-created',
+        data: contactoData
+      }
+    });
+
+    // ✅ NUEVO: Forzar actualización de página de errores si viene de corrección
+    if (isFromCorrection && originalErrorData) {
+      console.log('🔄 Forzando actualización de corrección de errores...');
+      
+      // Emitir evento específico para ErrorCorrection
+      const errorCorrectionEvent = new CustomEvent('error-correction-update', {
+        detail: {
+          type: 'item-corrected',
+          correctedItem: contactoData,
+          originalErrorData: originalErrorData,
+          action: isEditing ? 'updated' : 'created',
+          timestamp: Date.now()
+        }
+      });
+      
+      window.dispatchEvent(errorCorrectionEvent);
+    }
   };
 
   // Función para manejar procesamiento de queue de corrección masiva
@@ -274,11 +316,13 @@ const ContactoForm = () => {
     }
   };
 
-  // ✅ FUNCIÓN CORREGIDA: handleSubmit con manejo seguro de datos
+  // ✅ FUNCIÓN CORREGIDA: handleSubmit con mejor manejo de eventos
   const handleSubmit = async (e) => {
     e.preventDefault();
     
     console.log('🔍 [DEBUG] FormData antes de validar:', formData);
+    console.log('🔍 [DEBUG] isFromCorrection:', isFromCorrection);
+    console.log('🔍 [DEBUG] originalErrorData:', originalErrorData);
     console.log('🔍 [DEBUG] Tipos de datos:', {
       claveCliente: typeof formData.claveCliente,
       nombre: typeof formData.nombre,
@@ -322,17 +366,30 @@ const ContactoForm = () => {
         const successMessage = `Contacto ${isEditing ? 'actualizado' : 'creado'} exitosamente`;
         toast.success(successMessage);
         
-        // Emitir evento de actualización para que otros componentes se actualicen
-        emitContactoUpdated({
+        // ✅ MEJORA CRÍTICA: Preparar datos completos para el evento
+        const eventContactoData = {
           ...contactoData,
-          clave: contactoData.claveCliente
-        });
+          clave: contactoData.claveCliente,
+          // Incluir datos adicionales que puedan venir de la respuesta
+          ...(response.data.data || {}),
+          // Asegurar que la clave siempre esté presente en múltiples formatos
+          id: contactoData.claveCliente,
+          claveCliente: contactoData.claveCliente
+        };
         
-        // Limpiar callback de corrección
-        if (correctionCallback) {
-          sessionStorage.removeItem('correction-callback');
-          console.log('🧹 Callback de corrección limpiado');
-        }
+        console.log('🔍 [DEBUG] Event data preparado:', eventContactoData);
+        
+        // Emitir evento de actualización para que otros componentes se actualicen
+        emitContactoUpdated(eventContactoData);
+        
+        // ✅ NUEVO: Delay antes de limpiar callback para asegurar que el evento se procese
+        setTimeout(() => {
+          // Limpiar callback de corrección
+          if (correctionCallback) {
+            sessionStorage.removeItem('correction-callback');
+            console.log('🧹 Callback de corrección limpiado después de delay');
+          }
+        }, 500);
         
         // Procesar siguiente en queue si existe
         const hasQueue = sessionStorage.getItem('mass-correction-queue');
@@ -341,14 +398,16 @@ const ContactoForm = () => {
           return;
         }
         
-        // Navegación inteligente basada en contexto
+        // ✅ MEJORA: Navegación con delay para asegurar que los eventos se procesen
+        const navigationDelay = isFromCorrection ? 2000 : 1000; // Más tiempo si viene de corrección
+        
         if (isFromCorrection) {
-          // Si viene de corrección, volver a la página de corrección
-          toast.info('🔄 Regresando a corrección de errores...');
-          setTimeout(() => navigate('/correccion'), 1500);
+          // Si viene de corrección, mostrar mensaje específico y volver
+          toast.success('🎉 Corrección completada - Regresando...', { duration: 1500 });
+          setTimeout(() => navigate('/correccion'), navigationDelay);
         } else {
           // Navegación normal
-          navigate('/contactos');
+          setTimeout(() => navigate('/contactos'), navigationDelay);
         }
         
       } else {
@@ -624,10 +683,20 @@ const ContactoForm = () => {
           <h4 className="font-bold mb-1">🔍 Debug Info:</h4>
           <p>isEditing: {isEditing.toString()}</p>
           <p>isFromCorrection: {isFromCorrection.toString()}</p>
+          <p>correctionCallback: {correctionCallback ? 'Set' : 'None'}</p>
+          <p>originalErrorData: {originalErrorData ? 'Set' : 'None'}</p>
           <p>formData types: {JSON.stringify(Object.keys(formData).reduce((acc, key) => {
             acc[key] = typeof formData[key];
             return acc;
           }, {}))}</p>
+          {originalErrorData && (
+            <details className="mt-2">
+              <summary className="cursor-pointer font-medium">Ver originalErrorData</summary>
+              <pre className="mt-1 text-xs bg-gray-200 p-2 rounded overflow-auto">
+                {JSON.stringify(originalErrorData, null, 2)}
+              </pre>
+            </details>
+          )}
         </div>
       )}
     </div>

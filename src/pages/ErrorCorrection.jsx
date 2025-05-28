@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { contactosApi } from '../services/api';
 import toast from 'react-hot-toast';
@@ -12,59 +12,180 @@ const ErrorCorrection = () => {
   const [correcting, setCorrecting] = useState(false);
   const [activeTab, setActiveTab] = useState('invalid');
   const [processingQueue, setProcessingQueue] = useState(new Set());
+  
+  // ✅ SOLUCIÓN: Usar useRef para mantener referencias estables
+  const invalidDataRef = useRef([]);
+  const eventListenersAttached = useRef(false);
 
+  // ✅ SOLUCIÓN: Actualizar ref cuando cambie invalidData
   useEffect(() => {
-    loadData();
-    
-    // ✅ Escuchar eventos de actualización de contactos
-    const handleContactUpdate = (event) => {
-      if (event.detail && event.detail.type === 'contacto-updated') {
-        handleContactUpdated(event.detail.contacto);
-      }
-    };
+    invalidDataRef.current = invalidData;
+  }, [invalidData]);
 
-    window.addEventListener('contacto-updated', handleContactUpdate);
-    
-    return () => {
-      window.removeEventListener('contacto-updated', handleContactUpdate);
-    };
-  }, []);
-
-  // ✅ Manejar cuando un contacto se actualiza exitosamente
+  // ✅ FUNCIÓN CRÍTICA: handleContactUpdated con useCallback para referencia estable
   const handleContactUpdated = useCallback((updatedContacto) => {
-    console.log('🔄 Contacto actualizado, removiendo de lista de errores:', updatedContacto);
+    console.log('🔄 [HANDLER] Procesando actualización de contacto:', updatedContacto);
     
-    // Remover el contacto de la lista de datos inválidos
-    setInvalidData(prev => {
-      const filtered = prev.filter(item => {
-        const itemKey = extractNumericKey(item.claveCliente) || item.claveCliente;
-        const updatedKey = updatedContacto.claveCliente || updatedContacto.clave;
-        return itemKey !== updatedKey;
+    if (!updatedContacto) {
+      console.warn('⚠️ [HANDLER] Contacto actualizado está vacío');
+      return;
+    }
+
+    // Extraer la clave del contacto actualizado
+    const updatedKey = updatedContacto.claveCliente || 
+                      updatedContacto.clave || 
+                      updatedContacto.id;
+
+    console.log('🔍 [HANDLER] Clave del contacto actualizado:', updatedKey, typeof updatedKey);
+    console.log('📊 [HANDLER] Lista actual:', invalidDataRef.current.length, 'elementos');
+
+    // ✅ SOLUCIÓN: Usar functional update para evitar dependencias stale
+    setInvalidData(prevData => {
+      console.log('🔍 [HANDLER] Buscando en', prevData.length, 'elementos');
+      
+      const filtered = prevData.filter(item => {
+        const itemKey = item.claveCliente || item.clave || item.id;
+        
+        console.log('🔍 [HANDLER] Comparando:', {
+          itemKey,
+          itemKeyType: typeof itemKey,
+          updatedKey,
+          updatedKeyType: typeof updatedKey,
+          item: item.nombre || 'Sin nombre',
+          exactMatch: itemKey === updatedKey,
+          stringMatch: String(itemKey) === String(updatedKey),
+          numberMatch: Number(itemKey) === Number(updatedKey)
+        });
+
+        // Comparación múltiple
+        const matches = itemKey === updatedKey || 
+                       String(itemKey) === String(updatedKey) ||
+                       Number(itemKey) === Number(updatedKey);
+
+        return !matches; // Mantener los que NO coinciden
       });
       
-      if (filtered.length < prev.length) {
-        const removedCount = prev.length - filtered.length;
-        toast.success(`${removedCount} elemento(s) corregido(s) y removido(s) de la lista`);
+      const removedCount = prevData.length - filtered.length;
+      console.log('✅ [HANDLER] Elementos removidos:', removedCount);
+      
+      if (removedCount > 0) {
+        toast.success(`🎉 ${removedCount} elemento(s) corregido(s) y removido(s)`);
+      } else {
+        console.warn('⚠️ [HANDLER] No se removió ningún elemento');
+        
+        // ✅ FALLBACK: Intentar match por nombre y email
+        const flexibleFiltered = prevData.filter(item => {
+          const itemName = item.nombre?.toLowerCase() || '';
+          const updatedName = updatedContacto.nombre?.toLowerCase() || '';
+          const itemEmail = item.correo?.toLowerCase() || '';
+          const updatedEmail = updatedContacto.correo?.toLowerCase() || '';
+          
+          const nameEmailMatch = itemName && updatedName && itemEmail && updatedEmail &&
+                                 itemName === updatedName && itemEmail === updatedEmail;
+          
+          return !nameEmailMatch;
+        });
+        
+        if (flexibleFiltered.length < prevData.length) {
+          console.log('✅ [HANDLER] Match encontrado por nombre y email');
+          toast.success('🎉 Elemento corregido (match por nombre/email)');
+          return flexibleFiltered;
+        }
       }
       
       return filtered;
     });
 
-    // Limpiar de seleccionados
-    setSelectedErrors(new Set());
-    
-    // Remover de la cola de procesamiento
+    // Limpiar processingQueue
     setProcessingQueue(prev => {
       const newQueue = new Set(prev);
-      newQueue.delete(updatedContacto.claveCliente || updatedContacto.clave);
+      newQueue.delete(updatedKey);
+      newQueue.delete(String(updatedKey));
+      newQueue.delete(Number(updatedKey));
       return newQueue;
     });
-  }, []);
+
+    // Limpiar selectedErrors
+    setSelectedErrors(new Set());
+  }, []); // ✅ Sin dependencias para mantener referencia estable
+
+  // ✅ SOLUCIÓN: Event listeners en useEffect separado sin dependencias
+  useEffect(() => {
+    if (eventListenersAttached.current) {
+      console.log('⚠️ Event listeners ya están attachados, saltando...');
+      return;
+    }
+
+    console.log('🔗 Attachando event listeners...');
+
+    // ✅ Event handlers con referencias estables
+    const handleContactUpdateEvent = (event) => {
+      console.log('📡 [EVENT] contacto-updated recibido:', event.detail);
+      
+      if (event.detail && event.detail.contacto) {
+        handleContactUpdated(event.detail.contacto);
+      }
+    };
+
+    const handleApiDataUpdateEvent = (event) => {
+      console.log('📡 [EVENT] api-data-updated recibido:', event.detail);
+      
+      if (event.detail && event.detail.data) {
+        const { type, data } = event.detail;
+        
+        if (type === 'contacto-created' || type === 'contacto-updated') {
+          handleContactUpdated(data);
+        } else if (type === 'excel-reloaded') {
+          console.log('🔄 [EVENT] Excel recargado, actualizando datos...');
+          setTimeout(() => loadData(), 1000);
+        } else if (type === 'force-refresh-validation') {
+          console.log('🔄 [EVENT] Forzando refresh de validación...');
+          setTimeout(() => loadData(), 500);
+        }
+      }
+    };
+
+    const handleErrorCorrectionUpdateEvent = (event) => {
+      console.log('📡 [EVENT] error-correction-update recibido:', event.detail);
+      
+      if (event.detail && event.detail.correctedItem) {
+        handleContactUpdated(event.detail.correctedItem);
+      }
+    };
+
+    // ✅ Registrar listeners
+    window.addEventListener('contacto-updated', handleContactUpdateEvent);
+    window.addEventListener('api-data-updated', handleApiDataUpdateEvent);
+    window.addEventListener('error-correction-update', handleErrorCorrectionUpdateEvent);
+    
+    eventListenersAttached.current = true;
+    console.log('✅ Event listeners attachados correctamente');
+
+    // ✅ Cleanup
+    return () => {
+      console.log('🧹 Limpiando event listeners...');
+      window.removeEventListener('contacto-updated', handleContactUpdateEvent);
+      window.removeEventListener('api-data-updated', handleApiDataUpdateEvent);
+      window.removeEventListener('error-correction-update', handleErrorCorrectionUpdateEvent);
+      eventListenersAttached.current = false;
+    };
+  }, []); // ✅ Array vacío - solo se ejecuta una vez
+
+  // ✅ SOLUCIÓN: useEffect separado para cargar datos iniciales
+  useEffect(() => {
+    console.log('🚀 Cargando datos iniciales...');
+    loadData();
+  }, []); // Solo una vez al montar
 
   const loadData = async () => {
     setLoading(true);
     try {
       console.log('🔍 Iniciando carga de datos de validación...');
+      
+      // ✅ SOLUCIÓN: Forzar invalidación de cache antes de cargar
+      if (contactosApi.invalidateValidationCache) {
+        contactosApi.invalidateValidationCache();
+      }
       
       const results = await Promise.allSettled([
         loadInvalidData(),
@@ -99,12 +220,14 @@ const ErrorCorrection = () => {
             let data = response.data.data || [];
             
             if (endpoint.name === 'invalid-data' && Array.isArray(data) && data.length > 0) {
+              console.log('✅ Datos inválidos cargados desde invalid-data:', data.length);
               setInvalidData(data);
               toast.success(`${data.length} datos inválidos cargados`);
               return;
             }
             
             if (endpoint.name === 'validation' && data.invalidRowsData && Array.isArray(data.invalidRowsData)) {
+              console.log('✅ Datos inválidos cargados desde validation:', data.invalidRowsData.length);
               setInvalidData(data.invalidRowsData);
               toast.success(`${data.invalidRowsData.length} datos inválidos cargados`);
               return;
@@ -151,7 +274,7 @@ const ErrorCorrection = () => {
       id: 2,
       claveCliente: 'ABC123',
       nombre: '',
-      correo: 'contacto@test.com',
+      correo: 'contacto@test.com',  
       telefono: '5551234567',
       errors: ['Nombre requerido']
     },
@@ -165,60 +288,106 @@ const ErrorCorrection = () => {
     }
   ];
 
+  // ✅ FUNCIÓN CORREGIDA: extractNumericKey
   const extractNumericKey = (claveInput) => {
     if (!claveInput) return null;
+    
     const claveStr = String(claveInput).trim();
-    const directNumber = parseInt(claveStr, 10);
+    
+    // Si ya es un número, devolverlo
+    const directNumber = Number(claveStr);
     if (!isNaN(directNumber) && directNumber > 0) return directNumber;
     
+    // Extraer números de la cadena
     const numeroExtraido = claveStr.match(/\d+/g);
-    if (numeroExtraido) {
+    if (numeroExtraido && numeroExtraido.length > 0) {
       const numeroMasLargo = numeroExtraido.reduce((a, b) => a.length > b.length ? a : b);
-      const numero = parseInt(numeroMasLargo, 10);
+      const numero = Number(numeroMasLargo);
       if (!isNaN(numero) && numero > 0 && numero < 999999999) return numero;
     }
-    return null;
+    
+    return claveStr;
   };
 
-  // ✅ NUEVA FUNCIÓN: Corregir contacto con actualización automática
+  // ✅ NUEVA FUNCIÓN: Test manual de event listeners
+  const testEventListeners = () => {
+    console.log('🧪 Testing event listeners...');
+    
+    // Simular evento de prueba
+    const testEvent = new CustomEvent('api-data-updated', {
+      detail: {
+        type: 'contacto-created',
+        data: {
+          claveCliente: 121223,
+          nombre: 'Test Contact',
+          correo: 'test@test.com'
+        }
+      }
+    });
+    
+    window.dispatchEvent(testEvent);
+    console.log('🧪 Test event dispatched');
+  };
+
+  // ✅ NUEVA FUNCIÓN: Forzar actualización sin eventos
+  const forceUpdateWithoutEvents = () => {
+    console.log('🔄 Forzando actualización sin eventos...');
+    
+    // Simular que se corrigió el contacto con clave 121223
+    const targetKey = 121223;
+    
+    setInvalidData(prev => {
+      const filtered = prev.filter(item => {
+        const itemKey = item.claveCliente || item.clave || item.id;
+        const matches = itemKey === targetKey || 
+                       String(itemKey) === String(targetKey) ||
+                       Number(itemKey) === Number(targetKey);
+        return !matches;
+      });
+      
+      const removedCount = prev.length - filtered.length;
+      if (removedCount > 0) {
+        toast.success(`🎉 ${removedCount} elemento(s) removido(s) manualmente`);
+      }
+      
+      return filtered;
+    });
+  };
+
+  // Resto de funciones existentes...
   const handleCorrectContact = async (item, index) => {
     const clave = item.claveCliente || '';
     
-    if (!clave || clave.trim() === '') {
+    if (!clave || clave.toString().trim() === '') {
       toast.error('Este contacto no tiene clave cliente válida');
       return;
     }
 
     console.log('🔧 Iniciando corrección de contacto:', item);
     
-    // Marcar como en procesamiento
     setProcessingQueue(prev => new Set([...prev, clave]));
 
     try {
-      // Verificar si el contacto existe
       const response = await contactosApi.getById(clave);
       
       if (response.data.success) {
-        // Contacto existe, navegar a edición
         console.log('✅ Contacto encontrado, navegando a edición');
         
-        // Guardar callback para actualización automática
         sessionStorage.setItem('correction-callback', JSON.stringify({
           type: 'edit',
           originalData: item,
-          index: index
+          index: index,
+          fromErrorCorrection: true
         }));
         
         navigate(`/contactos/editar/${clave}`);
         
       } else {
-        // Contacto no existe, crear nuevo
         handleCreateFromInvalid(item, index);
       }
       
     } catch (error) {
       if (error.response?.status === 404) {
-        // Contacto no encontrado, ofrecer crear
         handleCreateFromInvalid(item, index);
       } else {
         console.error('❌ Error verificando contacto:', error);
@@ -232,17 +401,14 @@ const ErrorCorrection = () => {
     }
   };
 
-  // ✅ FUNCIÓN MEJORADA: Crear contacto desde datos inválidos
   const handleCreateFromInvalid = (item, index) => {
     console.log('➕ Creando contacto desde datos inválidos:', item);
     
-    // Generar clave si no existe
     let claveParaUsar = item.claveCliente || '';
-    if (!claveParaUsar.trim()) {
+    if (!claveParaUsar.toString().trim()) {
       claveParaUsar = `NEW${Date.now().toString().slice(-6)}`;
     }
     
-    // Preparar datos para el formulario
     const formData = {
       claveCliente: claveParaUsar,
       nombre: item.nombre || '',
@@ -250,21 +416,65 @@ const ErrorCorrection = () => {
       telefonoContacto: item.telefono || item.telefonoContacto || ''
     };
     
-    // Guardar en sessionStorage para pre-llenar formulario
     sessionStorage.setItem('prefilledContactData', JSON.stringify(formData));
     
-    // Guardar callback para actualización automática
     sessionStorage.setItem('correction-callback', JSON.stringify({
       type: 'create',
       originalData: item,
-      index: index
+      index: index,
+      fromErrorCorrection: true
     }));
     
     navigate('/contactos/nuevo');
     toast.info(`Creando nuevo contacto con clave: ${claveParaUsar}`);
   };
 
-  // ✅ NUEVA FUNCIÓN: Corrección masiva
+  const handleRemoveFromList = (index) => {
+    const item = invalidData[index];
+    const itemName = item.nombre || `Clave: ${item.claveCliente}`;
+    
+    if (window.confirm(`¿Remover "${itemName}" de la lista de errores?`)) {
+      setInvalidData(prev => prev.filter((_, i) => i !== index));
+      
+      setSelectedErrors(prev => {
+        const newSelected = new Set(prev);
+        newSelected.delete(index);
+        const reajustedSelected = new Set();
+        Array.from(newSelected).forEach(selectedIndex => {
+          if (selectedIndex < index) {
+            reajustedSelected.add(selectedIndex);
+          } else if (selectedIndex > index) {
+            reajustedSelected.add(selectedIndex - 1);
+          }
+        });
+        return reajustedSelected;
+      });
+      
+      toast.success('Elemento removido de la lista');
+    }
+  };
+
+  const handleManualRefresh = async () => {
+    try {
+      console.log('🔄 Actualizando datos manualmente...');
+      toast.loading('Actualizando datos...', { id: 'manual-refresh' });
+      
+      if (contactosApi.clearCache) {
+        contactosApi.clearCache();
+      }
+      if (contactosApi.invalidateValidationCache) {
+        contactosApi.invalidateValidationCache();
+      }
+      
+      await loadData();
+      
+      toast.success('Datos actualizados correctamente', { id: 'manual-refresh' });
+    } catch (error) {
+      console.error('❌ Error actualizando datos:', error);
+      toast.error('Error actualizando datos', { id: 'manual-refresh' });
+    }
+  };
+
   const handleMassCorrection = async () => {
     if (selectedErrors.size === 0) {
       toast.error('Selecciona al menos un elemento para corregir');
@@ -277,9 +487,8 @@ const ErrorCorrection = () => {
     try {
       console.log('🔧 Iniciando corrección masiva de', selectedItems.length, 'elementos');
       
-      // Procesar solo los que tienen clave válida
       const validItems = selectedItems.filter(item => 
-        item.claveCliente && item.claveCliente.trim() !== ''
+        item.claveCliente && item.claveCliente.toString().trim() !== ''
       );
       
       if (validItems.length === 0) {
@@ -287,26 +496,23 @@ const ErrorCorrection = () => {
         return;
       }
 
-      // Mostrar preview de lo que se va a corregir
       const shouldProceed = window.confirm(
         `¿Proceder con la corrección masiva?\n\n` +
         `✅ ${validItems.length} elementos con clave válida\n` +
-        `❌ ${selectedItems.length - validItems.length} elementos sin clave válida\n\n` +
-        `Se abrirá el formulario de edición para cada elemento válido.`
+        `❌ ${selectedItems.length - validItems.length} elementos sin clave válida`
       );
 
       if (!shouldProceed) return;
 
-      // Procesar el primer elemento válido
       if (validItems.length > 0) {
         const firstItem = validItems[0];
         const originalIndex = invalidData.findIndex(item => item === firstItem);
         
-        // Guardar información para procesamiento en lote
         sessionStorage.setItem('mass-correction-queue', JSON.stringify({
-          items: validItems.slice(1), // Resto de items
+          items: validItems.slice(1),
           currentIndex: 0,
-          totalCount: validItems.length
+          totalCount: validItems.length,
+          fromErrorCorrection: true
         }));
         
         await handleCorrectContact(firstItem, originalIndex);
@@ -317,36 +523,6 @@ const ErrorCorrection = () => {
       toast.error('Error en corrección masiva');
     } finally {
       setCorrecting(false);
-    }
-  };
-
-  // ✅ NUEVA FUNCIÓN: Refresh datos después de corrección
-  const handleRefreshAfterCorrection = async () => {
-    try {
-      console.log('🔄 Actualizando datos después de corrección...');
-      await loadData();
-      toast.success('Datos actualizados');
-    } catch (error) {
-      console.error('❌ Error actualizando datos:', error);
-      toast.error('Error actualizando datos');
-    }
-  };
-
-  // ✅ NUEVA FUNCIÓN: Marcar como corregido manualmente
-  const handleMarkAsCorrected = (index) => {
-    const item = invalidData[index];
-    
-    if (window.confirm(`¿Marcar "${item.nombre || 'Sin nombre'}" como corregido?\n\nEsto lo removerá de la lista de errores.`)) {
-      setInvalidData(prev => prev.filter((_, i) => i !== index));
-      
-      // Remover de seleccionados si estaba seleccionado
-      setSelectedErrors(prev => {
-        const newSelected = new Set(prev);
-        newSelected.delete(index);
-        return newSelected;
-      });
-      
-      toast.success('Elemento marcado como corregido');
     }
   };
 
@@ -389,8 +565,25 @@ const ErrorCorrection = () => {
             </p>
           </div>
           <div className="flex space-x-3">
+            {/* ✅ BOTONES DE DEBUG */}
+            {process.env.NODE_ENV === 'development' && (
+              <>
+                <button
+                  onClick={testEventListeners}
+                  className="inline-flex items-center px-3 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-yellow-50 hover:bg-yellow-100"
+                >
+                  🧪 Test Events
+                </button>
+                <button
+                  onClick={forceUpdateWithoutEvents}
+                  className="inline-flex items-center px-3 py-2 border border-orange-300 text-sm font-medium rounded-md text-orange-700 bg-orange-50 hover:bg-orange-100"
+                >
+                  ⚡ Force Update
+                </button>
+              </>
+            )}
             <button
-              onClick={handleRefreshAfterCorrection}
+              onClick={handleManualRefresh}
               disabled={loading}
               className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
             >
@@ -509,12 +702,13 @@ const ErrorCorrection = () => {
               {/* Lista de Datos Inválidos */}
               <div className="space-y-4">
                 {invalidData.map((item, index) => {
-                  const isProcessing = processingQueue.has(item.claveCliente);
+                  const itemKey = item.claveCliente || item.clave || item.id;
+                  const isProcessing = processingQueue.has(itemKey);
                   const isSelected = selectedErrors.has(index);
                   
                   return (
                     <div
-                      key={index}
+                      key={`${itemKey}-${index}`}
                       className={`border rounded-lg p-4 transition-all ${
                         isSelected ? 'border-primary-500 bg-primary-50' : 
                         isProcessing ? 'border-yellow-500 bg-yellow-50' : 'border-gray-200'
@@ -534,9 +728,9 @@ const ErrorCorrection = () => {
                               <span className="text-sm font-medium text-gray-900">
                                 {item.nombre || 'Sin nombre'}
                               </span>
-                              {item.claveCliente && (
+                              {itemKey && (
                                 <span className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-800">
-                                  Clave: {item.claveCliente}
+                                  Clave: {itemKey}
                                 </span>
                               )}
                               {isProcessing && (
@@ -559,7 +753,11 @@ const ErrorCorrection = () => {
                                 >
                                   {error}
                                 </span>
-                              ))}
+                              )) || (
+                                <span className="inline-block bg-yellow-100 text-yellow-800 text-xs px-2 py-1 rounded">
+                                  Datos requieren validación
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -567,18 +765,18 @@ const ErrorCorrection = () => {
                         <div className="flex flex-col space-y-2">
                           <button
                             onClick={() => handleCorrectContact(item, index)}
-                            disabled={isProcessing || !item.claveCliente}
+                            disabled={isProcessing || !itemKey}
                             className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-50"
                           >
                             {isProcessing ? '🔄' : '🔧 Corregir'}
                           </button>
                           
                           <button
-                            onClick={() => handleMarkAsCorrected(index)}
+                            onClick={() => handleRemoveFromList(index)}
                             disabled={isProcessing}
-                            className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50"
+                            className="px-3 py-1 bg-gray-600 text-white text-xs rounded hover:bg-gray-700 disabled:opacity-50"
                           >
-                            ✅ Marcar OK
+                            ❌ Remover
                           </button>
                         </div>
                       </div>
@@ -607,6 +805,30 @@ const ErrorCorrection = () => {
         </div>
       </div>
 
+      {/* ✅ DEBUG INFO MEJORADO */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="mt-6 bg-gray-100 border border-gray-300 rounded-lg p-4">
+          <h4 className="text-sm font-bold text-gray-800 mb-2">🔍 Debug Info:</h4>
+          <div className="text-xs text-gray-600">
+            <p>• Invalid data count: {invalidData.length}</p>
+            <p>• Processing queue: {processingQueue.size}</p>
+            <p>• Selected errors: {selectedErrors.size}</p>
+            <p>• Event listeners attached: {eventListenersAttached.current ? 'Yes' : 'No'}</p>
+            <details className="mt-2">
+              <summary className="cursor-pointer font-medium">Ver claves en invalidData</summary>
+              <div className="mt-1 ml-4">
+                {invalidData.slice(0, 5).map((item, i) => (
+                  <p key={i}>
+                    [{i}] {item.nombre} - Clave: {item.claveCliente} ({typeof item.claveCliente})
+                  </p>
+                ))}
+                {invalidData.length > 5 && <p>... y {invalidData.length - 5} más</p>}
+              </div>
+            </details>
+          </div>
+        </div>
+      )}
+
       {/* Información de Ayuda */}
       <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
         <div className="flex">
@@ -621,8 +843,15 @@ const ErrorCorrection = () => {
               <ul className="list-disc list-inside space-y-1">
                 <li><strong>Corregir Individual:</strong> Haz clic en "🔧 Corregir" para editar un contacto específico</li>
                 <li><strong>Corrección Masiva:</strong> Selecciona múltiples elementos y usa "Corregir Seleccionados"</li>
-                <li><strong>Marcar como OK:</strong> Si un dato ya está correcto, márcalo como "✅ Marcar OK"</li>
+                <li><strong>Remover de la Lista:</strong> Si un dato ya está correcto, usa "❌ Remover" para quitarlo de la vista</li>
                 <li><strong>Actualización Automática:</strong> Los elementos corregidos se remueven automáticamente de la lista</li>
+                <li><strong>Actualizar Manualmente:</strong> Usa el botón "🔄 Actualizar" si los cambios no se reflejan</li>
+                {process.env.NODE_ENV === 'development' && (
+                  <>
+                    <li><strong>🧪 Test Events:</strong> Prueba si los event listeners están funcionando</li>
+                    <li><strong>⚡ Force Update:</strong> Fuerza la actualización sin eventos (para debugging)</li>
+                  </>
+                )}
               </ul>
             </div>
           </div>
